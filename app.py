@@ -1,6 +1,7 @@
 from flask import Flask, request, Response
 import requests
 import concurrent.futures
+import threading
 
 app = Flask(__name__)
 
@@ -21,19 +22,17 @@ def check_single_link(link):
         pass
     return None
 
-@app.route('/add-link', methods=['POST'])
-def add_link():
+# 🌟 ব্যাকগ্রাউন্ড প্রসেসর (র‍্যাম ও টাইমআউট বাঁচানোর জন্য)
+def background_processor(new_links):
     global master_links, VALID_PLAYLIST
-    data = request.json
-    if not data or 'links' not in data:
-        return {"status": "error", "message": "No links found"}, 400
     
-    for link in data['links']:
+    for link in new_links:
         if link not in master_links:
             master_links.append(link)
 
     alive_links = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # 🌟 র‍্যাম বাঁচানোর জন্য max_workers=5 করে দেওয়া হয়েছে
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(check_single_link, master_links)
         for res in results:
             if res:
@@ -44,9 +43,7 @@ def add_link():
     playlist = "#EXTM3U\n\n"
     for i, link in enumerate(master_links):
         clean_url = link.split("|")[0] if "|" in link else link
-        
-        # 🌟 হেডার এক্সট্রাক্ট করা (VLC এর জন্য)
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        user_agent = HEADERS["User-Agent"]
         referer = ""
         
         if "|" in link:
@@ -59,21 +56,28 @@ def add_link():
                 pass
 
         playlist += f'#EXTINF:-1 tvg-logo="https://raw.githubusercontent.com/jhrtvapk-ops/JHRNOTEapp-logos/refs/heads/main/ic_launcher.png", VIP Channel {i+1}\n'
-        
-        # 🌟 VLC এর ভাষায় সিকিউরিটি হেডার বসানো
         playlist += f'#EXTVLCOPT:http-user-agent={user_agent}\n'
         if referer:
             playlist += f'#EXTVLCOPT:http-referrer={referer}\n'
-        
-        # 🌟 একদম ফ্রেশ লিংক (VLC এর জন্য কোনো পাইপ | ছাড়াই)
         playlist += f"{clean_url}\n\n"
     
     VALID_PLAYLIST = playlist
-    return {"status": "success", "alive_count": len(master_links)}
+
+@app.route('/add-link', methods=['POST'])
+def add_link():
+    data = request.json
+    if not data or 'links' not in data:
+        return {"status": "error", "message": "No links found"}, 400
+    
+    # 🌟 অ্যাপ থেকে লিংক আসামাত্রই ব্যাকগ্রাউন্ড থ্রেড চালু হয়ে যাবে (কোনো TIMEOUT হবে না)
+    threading.Thread(target=background_processor, args=(data['links'],)).start()
+    
+    return {"status": "success", "message": "Processing safely in background"}
 
 @app.route('/live.m3u', methods=['GET'])
 def get_playlist():
     resp = Response(VALID_PLAYLIST, mimetype='application/vnd.apple.mpegurl')
+    # 🌟 যেকোনো প্লেয়ারে (ExoPlayer/VLC) চলার জন্য CORS হেডার
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp
 
