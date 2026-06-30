@@ -1,51 +1,21 @@
 from flask import Flask, request, Response
-import requests
-import concurrent.futures
-import threading
 
 app = Flask(__name__)
 
 master_links = []
 VALID_PLAYLIST = "#EXTM3U\n\n"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
-def check_single_link(link):
-    try:
-        clean_url = link.split("|")[0] if "|" in link else link
-        res = requests.head(clean_url, headers=HEADERS, timeout=3, allow_redirects=True)
-        if res.status_code in [200, 206, 302, 403]:
-            return link
-    except:
-        pass
-    return None
-
-# 🌟 ব্যাকগ্রাউন্ড প্রসেসর (র‍্যাম ও টাইমআউট বাঁচানোর জন্য)
-def background_processor(new_links):
+# 🌟 প্লেলিস্ট বিল্ডার (কোনো স্লো টেস্টিং ছাড়া ইনস্ট্যান্ট কাজ করবে)
+def build_playlist():
     global master_links, VALID_PLAYLIST
-    
-    for link in new_links:
-        if link not in master_links:
-            master_links.append(link)
-
-    alive_links = []
-    # 🌟 র‍্যাম বাঁচানোর জন্য max_workers=5 করে দেওয়া হয়েছে
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = executor.map(check_single_link, master_links)
-        for res in results:
-            if res:
-                alive_links.append(res)
-    
-    master_links = alive_links
-
     playlist = "#EXTM3U\n\n"
+    
     for i, link in enumerate(master_links):
         clean_url = link.split("|")[0] if "|" in link else link
-        user_agent = HEADERS["User-Agent"]
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         referer = ""
         
+        # অ্যাপের পাঠানো সিকিউরিটি হেডারগুলো আলাদা করা
         if "|" in link:
             try:
                 parts = link.split("|")[1].split("&")
@@ -55,31 +25,44 @@ def background_processor(new_links):
             except:
                 pass
 
-        playlist += f'#EXTINF:-1 tvg-logo="https://raw.githubusercontent.com/jhrtvapk-ops/JHRNOTEapp-logos/refs/heads/main/ic_launcher.png", VIP Channel {i+1}\n'
+        playlist += f'#EXTINF:-1 tvg-logo="https://raw.githubusercontent.com/jhrtvapk-ops/JHRNOTEapp-logos/refs/heads/main/ic_launcher.png", VIP Live Channel {i+1}\n'
+        
+        # VLC এবং অন্যান্য প্লেয়ারের জন্য হেডার সেটআপ
         playlist += f'#EXTVLCOPT:http-user-agent={user_agent}\n'
         if referer:
             playlist += f'#EXTVLCOPT:http-referrer={referer}\n'
+            
         playlist += f"{clean_url}\n\n"
     
     VALID_PLAYLIST = playlist
 
 @app.route('/add-link', methods=['POST'])
 def add_link():
+    global master_links
     data = request.json
     if not data or 'links' not in data:
         return {"status": "error", "message": "No links found"}, 400
     
-    # 🌟 অ্যাপ থেকে লিংক আসামাত্রই ব্যাকগ্রাউন্ড থ্রেড চালু হয়ে যাবে (কোনো TIMEOUT হবে না)
-    threading.Thread(target=background_processor, args=(data['links'],)).start()
-    
-    return {"status": "success", "message": "Processing safely in background"}
+    added_new = False
+    for link in data['links']:
+        if link not in master_links:
+            # 🌟 নতুন লিংক আসামাত্রই লিস্টের একদম ওপরে (1st position) বসিয়ে দিচ্ছি
+            master_links.insert(0, link)
+            added_new = True
+            
+    if added_new:
+        # সাথে সাথে প্লেলিস্ট আপডেট!
+        build_playlist()
+        
+    return {"status": "success", "total_links": len(master_links)}
 
 @app.route('/live.m3u', methods=['GET'])
 def get_playlist():
+    # 🌟 যেকোনো প্লেয়ারে (ExoPlayer/VLC/TiviMate) সাপোর্ট করার জন্য
     resp = Response(VALID_PLAYLIST, mimetype='application/vnd.apple.mpegurl')
-    # 🌟 যেকোনো প্লেয়ারে (ExoPlayer/VLC) চলার জন্য CORS হেডার
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp
 
 if __name__ == '__main__':
+    # 🌟 রেন্ডারের পোর্ট অনুযায়ী রান করবে
     app.run(host='0.0.0.0', port=10000)
